@@ -11,3 +11,9 @@ Specifically, layers **20–27 are executed twice**, while layers **0–19 and 2
 The idea is to give the model more processing depth without adding or changing any model weights. Essentially, it gets another pass through part of its existing transformer network before continuing to the final layers.
 
 In my own testing, the improvement is definitely noticeable. It's still experimental, and results can vary depending on the prompt, but I've seen more consistent reasoning and fewer obviously poor answers compared to the unmodified model.
+
+**If you're VRAM-poor and already running this model, you should 1000% give this version a try. I think you'll notice the difference.**
+
+</div>
+
+---
