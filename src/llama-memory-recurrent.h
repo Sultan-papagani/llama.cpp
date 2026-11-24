@@ -25,7 +25,9 @@ public:
                      uint32_t   mem_size,
                      uint32_t   n_seq_max,
                      uint32_t   n_rs_seq,
-        const layer_filter_cb & filter);
+        const layer_filter_cb & filter,
+        const layer_filter_cb & filter_extra = nullptr);
+    
 
     ~llama_memory_recurrent() = default;
 
@@ -67,6 +69,8 @@ public:
     void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const override;
     void state_read (llama_io_read_i  & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) override;
 
+    // Number of physical model layers; bank 1 uses indices offset by this amount.
+    uint32_t n_layer = 0;
     uint32_t head = 0; // the location where the batch will be placed in the cache (see find_slot())
     uint32_t size = 0; // total number of cells, shared across all sequences
     uint32_t used = 0; // used cells (i.e. at least one seq_id)
@@ -181,9 +185,9 @@ public:
     int32_t  get_rs_z() const;
     uint32_t get_size() const;
 
-    ggml_tensor * get_r_l(int32_t il) const;
-    ggml_tensor * get_s_l(int32_t il) const;
-    ggml_tensor * get_p_l(int32_t il) const;
+    ggml_tensor * get_r_l(int32_t il, uint32_t bank = 0) const;
+    ggml_tensor * get_s_l(int32_t il, uint32_t bank = 0) const;
+    ggml_tensor * get_p_l(int32_t il, uint32_t bank = 0) const;
 
     int32_t s_copy(int i) const;
 

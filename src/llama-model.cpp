@@ -3335,6 +3335,9 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                     // layer filters, so pick the right one here
                     llama_memory_hybrid::layer_filter_cb filter_attn = nullptr;
                     llama_memory_hybrid::layer_filter_cb filter_recr = nullptr;
+
+                    llama_memory_hybrid::layer_filter_cb filter_attn_extra = nullptr;
+                    llama_memory_hybrid::layer_filter_cb filter_recr_extra = nullptr;
                     // only the sparse-attention architectures use llama_memory_hybrid_idx
                     // a null filter_idx means the GGUF has no indexer tensors
                     llama_memory_hybrid::layer_filter_cb filter_idx  = nullptr;
@@ -3385,6 +3388,16 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                                 filter_idx = [&](uint32_t il) { return il >= hparams.n_layer(); };
                             }
                         }
+                    }
+
+                    if (arch == LLM_ARCH_QWEN35MOE && hparams.n_layer() == 40) {
+                        filter_attn_extra = [&](uint32_t il) {
+                            return il >= 20 && il < 28 && !hparams.is_recr(il);
+                        };
+
+                        filter_recr_extra = [&](uint32_t il) {
+                            return il >= 20 && il < 28 && hparams.is_recr(il);
+                        };
                     }
 
                     if (hparams.swa_type != LLAMA_SWA_TYPE_NONE) {
@@ -3446,7 +3459,9 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                             /* offload           */ cparams.offload_kqv,
                             /* unified           */ cparams.kv_unified,
                             /* filter_attn       */ std::move(filter_attn),
-                            /* filter_recr       */ std::move(filter_recr));
+                            /* filter_recr       */ std::move(filter_recr),
+                            /* filter_attn_extra */ std::move(filter_attn_extra),
+                            /* filter_recr_extra */ std::move(filter_recr_extra));
                     }
                 } else {
                     llama_kv_cache::layer_filter_cb filter = nullptr;

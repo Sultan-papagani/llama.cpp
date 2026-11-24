@@ -3360,8 +3360,8 @@ static void build_attn_scale_kv_inputs(
         ggml_tensor * & q,
         ggml_tensor * & k,
         ggml_tensor * & v,
-        int32_t il) {
-    if (ggml_tensor * scale = mctx->get_k_scale(il)) {
+        int32_t il, uint32_t bank = 0) {
+    if (ggml_tensor * scale = mctx->get_k_scale(il, bank)) {
         // Store K/s and move its dequant scale to Q: (Q*s) dot (K/s) = Q dot K.
         q = ggml_mul(ctx, q, scale);
         if (k) {
@@ -3371,7 +3371,7 @@ static void build_attn_scale_kv_inputs(
 
     if (v) {
         // Store V/s here and restore its dequant scale after the weighted sum.
-        ggml_tensor * scale = mctx->get_v_scale(il);
+        ggml_tensor * scale = mctx->get_v_scale(il, bank);
         if (scale) {
             v = ggml_div(ctx, v, scale);
         }
@@ -3382,8 +3382,8 @@ static ggml_tensor * build_attn_scale_kv_output(
         ggml_context * ctx,
         const llama_kv_cache_context * mctx,
         ggml_tensor * cur,
-        int32_t il) {
-    if (ggml_tensor * scale = mctx->get_v_scale(il)) {
+        int32_t il, uint32_t bank = 0) {
+    if (ggml_tensor * scale = mctx->get_v_scale(il, bank)) {
         // P*(V/s)*s = P*V.
         cur = ggml_mul(ctx, cur, scale);
     }
@@ -3403,7 +3403,7 @@ ggml_tensor * llm_graph_context::build_attn(
         ggml_tensor * sinks,
         ggml_tensor * v_mla, // TODO: remove
             float     kq_scale,
-            int       il) const {
+            int       il, uint32_t bank) const {
     const llm_arch arch = model.arch;
 
     GGML_ASSERT(v_mla == nullptr);
@@ -3419,7 +3419,7 @@ ggml_tensor * llm_graph_context::build_attn(
 
     const auto * mctx_cur = inp->mctx;
 
-    build_attn_scale_kv_inputs(ctx0, mctx_cur, q_cur, k_cur, v_cur, il);
+    build_attn_scale_kv_inputs(ctx0, mctx_cur, q_cur, k_cur, v_cur, il, bank);
 
     // these nodes are added to the graph together so that they are not reordered
     // by doing so, the number of splits in the graph is reduced
@@ -3442,19 +3442,19 @@ ggml_tensor * llm_graph_context::build_attn(
             const auto & k_idxs = inp->get_k_idxs();
             const auto & v_idxs = inp->get_v_idxs();
 
-            ggml_build_forward_expand(gf, mctx_cur->cpy_k(ctx0, k_cur, k_idxs, il));
-            ggml_build_forward_expand(gf, mctx_cur->cpy_v(ctx0, v_cur, v_idxs, il));
+            ggml_build_forward_expand(gf, mctx_cur->cpy_k(ctx0, k_cur, k_idxs, il, bank));
+            ggml_build_forward_expand(gf, mctx_cur->cpy_v(ctx0, v_cur, v_idxs, il, bank));
         }
 
-        k = mctx_cur->get_k(ctx0, il);
-        v = mctx_cur->get_v(ctx0, il);
+        k = mctx_cur->get_k(ctx0, il, bank);
+        v = mctx_cur->get_v(ctx0, il, bank);
     }
 
     const auto & kq_mask = inp->self_attn_mask.raw;
     const auto & kv_rows = inp->self_attn_mask.rows;
 
     ggml_tensor * cur = build_attn_mha(q, k, v, kq_b, kq_mask, kv_rows, sinks, v_mla, 0, kq_scale, il);
-    cur = build_attn_scale_kv_output(ctx0, mctx_cur, cur, il);
+    cur = build_attn_scale_kv_output(ctx0, mctx_cur, cur, il, bank);
     cb(cur, "kqv_out", il);
 
     if (inp->self_v_rot[il]) {

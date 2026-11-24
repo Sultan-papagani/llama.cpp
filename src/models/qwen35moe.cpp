@@ -172,55 +172,80 @@ llama_model_qwen35moe::graph::graph(const llm_graph_params & params) :
     ggml_tensor * inp_out_ids = build_inp_out_ids();
 
     // MTP/NextN layers are loaded as extra decoder blocks but not executed in the main pass.
-    for (int il = 0; il < n_layer; ++il) {
+
+        auto build_layer = [&](int il, uint32_t bank, bool save_layer_input) {
+    if (save_layer_input) {
         res->t_layer_inp[il] = inpL;
-
-        ggml_tensor * inpSA = inpL;
-
-        cur = build_norm(inpL, model.layers[il].attn_norm, nullptr, LLM_NORM_RMS, il);
-        cb(cur, "attn_norm", il);
-
-        ggml_build_forward_expand(gf, cur);
-
-        // Determine layer type and build appropriate attention mechanism
-        if (hparams.is_recr(il)) {
-            // Linear attention layer (gated delta net)
-            cur = build_layer_attn_linear(inp->get_recr(), cur, il);
-        } else {
-            // Full attention layer
-            cur = build_layer_attn(inp->get_attn(), cur, inp_pos, il);
-        }
-
-        if (il == n_layer - 1 && crop_before_nextn(inp_out_ids)) {
-            cur   = ggml_get_rows(ctx0, cur, inp_out_ids);
-            inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
-        }
-
-        // Residual connection
-        cur = ggml_add(ctx0, cur, inpSA);
-        cb(cur, "attn_residual", il);
-
-        // Save the tensor before post-attention norm for residual connection
-        ggml_tensor * ffn_residual = cur;
-
-        // Post-attention norm
-        ggml_tensor * attn_post_norm = build_norm(cur, model.layers[il].attn_post_norm, nullptr, LLM_NORM_RMS, il);
-        cb(attn_post_norm, "attn_post_norm", il);
-
-        // MOE FFN layer
-        cur = build_layer_ffn(attn_post_norm, il);
-        cb(cur, "ffn_out", il);
-
-        // Residual connection for FFN - add to the tensor from before post_attention_layernorm
-        cur = ggml_add(ctx0, cur, ffn_residual);
-        cb(cur, "post_moe", il);
-
-        cur = build_cvec(cur, il);
-        cb(cur, "l_out", il);
-
-        // Input for next layer
-        inpL = cur;
     }
+
+    ggml_tensor * inpSA = inpL;
+
+    cur = build_norm(inpL, model.layers[il].attn_norm, nullptr, LLM_NORM_RMS, il);
+    cb(cur, "attn_norm", il);
+
+    ggml_build_forward_expand(gf, cur);
+
+    if (hparams.is_recr(il)) {
+        cur = build_layer_attn_linear(inp->get_recr(), cur, il, bank);
+    } else {
+        cur = build_layer_attn(inp->get_attn(), cur, inp_pos, il, bank);
+    }
+
+    if (il == n_layer - 1 && crop_before_nextn(inp_out_ids)) {
+        cur = ggml_get_rows(ctx0, cur, inp_out_ids);
+        inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
+    }
+
+    cur = ggml_add(ctx0, cur, inpSA);
+    cb(cur, "attn_residual", il);
+
+    ggml_tensor * ffn_residual = cur;
+
+    ggml_tensor * attn_post_norm =
+        build_norm(cur, model.layers[il].attn_post_norm, nullptr, LLM_NORM_RMS, il);
+    cb(attn_post_norm, "attn_post_norm", il);
+
+    cur = build_layer_ffn(attn_post_norm, il);
+    cb(cur, "ffn_out", il);
+
+    cur = ggml_add(ctx0, cur, ffn_residual);
+    cb(cur, "post_moe", il);
+
+    cur = build_cvec(cur, il);
+    cb(cur, "l_out", il);
+
+    inpL = cur;
+};
+
+// Focused middle-block repetition for the 40-layer model.
+if (n_layer == 40) {
+
+    // Prefix: layers 0-19, once.
+    for (int il = 0; il < 20; ++il) {
+        build_layer(il, 0, true);
+    }
+
+    // Middle pass 1: layers 20-27, primary memory bank.
+    for (int il = 20; il < 28; ++il) {
+        build_layer(il, 0, true);
+    }
+
+    // Middle pass 2: layers 20-27, independent memory bank.
+    for (int il = 20; il < 28; ++il) {
+        build_layer(il, 1, false);
+    }
+
+    // Suffix: layers 28-39, once.
+    for (int il = 28; il < n_layer; ++il) {
+        build_layer(il, 0, true);
+    }
+
+} else {
+    // Preserve normal execution for other model sizes.
+    for (int il = 0; il < n_layer; ++il) {
+        build_layer(il, 0, true);
+    }
+}
     cur = inpL;
 
     // post-norm hidden state feeds both the LM head and the MTP seed below
@@ -274,7 +299,8 @@ ggml_tensor * llama_model_qwen35moe::graph::build_layer_attn(
         llm_graph_input_attn_kv * inp,
         ggml_tensor *             cur,
         ggml_tensor *             inp_pos,
-        int                       il) {
+        int                       il,
+        uint32_t bank) {
     const int64_t n_embd_head = hparams.n_embd_head_v();
     GGML_ASSERT(n_embd_head == hparams.n_embd_head_k());
 
@@ -326,7 +352,7 @@ ggml_tensor * llama_model_qwen35moe::graph::build_layer_attn(
 
     cur = build_attn(inp,
                 nullptr, nullptr, nullptr,
-                Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, kq_scale, il);
+                Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, kq_scale, il, bank);
     cb(cur, "attn_pregate", il);
 
     ggml_tensor * gate_sigmoid = ggml_sigmoid(ctx0, gate);
@@ -344,7 +370,7 @@ ggml_tensor * llama_model_qwen35moe::graph::build_layer_attn(
 ggml_tensor * llama_model_qwen35moe::graph::build_layer_attn_linear(
         llm_graph_input_rs * inp,
         ggml_tensor *        cur,
-        int                  il) {
+        int                  il, uint32_t bank) {
     const auto * mctx_cur = inp->mctx;
 
     const int64_t d_inner      = hparams.ssm_d_inner;
@@ -384,8 +410,8 @@ ggml_tensor * llama_model_qwen35moe::graph::build_layer_attn_linear(
 
     gate = ggml_reshape_4d(ctx0, gate, 1, num_v_heads, n_seq_tokens, n_seqs);
 
-    ggml_tensor * conv_states_all = mctx_cur->get_r_l(il);
-    ggml_tensor * ssm_states_all  = mctx_cur->get_s_l(il);
+    ggml_tensor * conv_states_all = mctx_cur->get_r_l(il, bank);
+    ggml_tensor * ssm_states_all = mctx_cur->get_s_l(il, bank);
 
     ggml_tensor * conv_kernel      = model.layers[il].ssm_conv1d;
     const int64_t conv_kernel_size = conv_kernel->ne[0];

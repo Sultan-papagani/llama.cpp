@@ -2966,12 +2966,12 @@ struct llama_model_qwen35moe : public llama_model_base {
         llm_graph_input_attn_kv * inp_attn,
                     ggml_tensor * cur,
                     ggml_tensor * inp_pos,
-                            int   il);
+                            int   il, uint32_t bank = 0);
 
         ggml_tensor * build_layer_attn_linear(
              llm_graph_input_rs * inp,
                     ggml_tensor * cur,
-                            int   il);
+                            int   il, uint32_t bank = 0);
 
         ggml_tensor * build_layer_ffn(
                     ggml_tensor * cur,
